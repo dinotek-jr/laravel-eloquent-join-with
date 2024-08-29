@@ -5,6 +5,7 @@ namespace Safadi\EloquentJoinWith\Database\Eloquent;
 use Closure;
 use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\Relations\Relation;
 use Illuminate\Support\Str;
@@ -32,6 +33,8 @@ class Builder extends EloquentBuilder
      */
     protected $populatedJoins = [];
 
+    private $joinTableColumns = [];
+
     /**
      * Set the relationships that should joined, only HasOne and BelongsTo relations are supported.
      *
@@ -52,6 +55,24 @@ class Builder extends EloquentBuilder
         return $this;
     }
 
+
+    /**
+     * This inserts our own column detection into the standard laravel pipeline
+     * so we can use our own column selections when joining the tables.
+     * Create a constraint to select the given columns for the relation.
+     *
+     * @param  string  $name
+     * @return array
+     */
+    protected function createSelectWithConstraint($name)
+    {
+        $columns = strpos($name, ':') ? explode(',', explode(':', $name)[1]) : null;
+        if(!is_null($columns)) {
+            $this->joinTableColumns[explode(':', $name)[0]] = $columns;
+        }
+        return parent::createSelectWithConstraint($name);
+    }
+
     /**
      * Execute the query as a "select" statement.
      *
@@ -61,14 +82,13 @@ class Builder extends EloquentBuilder
     public function get($columns = ['*'])
     {
         $builder = $this->applyScopes();
-
         $builder->applyJoinsWith($columns);
-        
+
         if (count($models = $builder->getModels($columns)) > 0) {
             // Keep original eager load of relations
             $models = $builder->eagerLoadRelations($models);
         }
-        
+
         return $this->applyAfterQueryCallbacks(
             $builder->getModel()->newCollection($models)
         );
@@ -98,7 +118,7 @@ class Builder extends EloquentBuilder
         $instance = $this->newModelInstance();
 
         return $instance->newCollection(array_map(function ($item) use ($items, $instance) {
-            
+
             $model = $instance->newFromBuilder($item);
             $this->populateModel($model, $item);
 
@@ -113,7 +133,7 @@ class Builder extends EloquentBuilder
     /**
      * @param array  $columns
      * @return Builder
-     * 
+     *
      * @throws \RuntimeException
      */
     protected function applyJoinsWith(&$columns = ['*'])
@@ -123,7 +143,7 @@ class Builder extends EloquentBuilder
         }
 
         $columns = $this->applyQualifiedColumnName($columns, $this->getModel()->getTable());
-        
+
         foreach ($this->joinWith as $name => $constraints) {
             // Skip nested relations
             if (strpos($name, '.') !== false) {
@@ -145,7 +165,7 @@ class Builder extends EloquentBuilder
     /**
      * @param Relation  $relation
      * @param array   $columns
-     * @param Closure  $constraints 
+     * @param Closure  $constraints
      */
     protected function applyRelationJoin(Relation $relation, array &$columns, Closure $constraints)
     {
@@ -160,7 +180,7 @@ class Builder extends EloquentBuilder
 
         $related = $relation->getRelated();
         $table = $related->getTable();
-        $related_columns = $this->applyQualifiedColumnName($this->getColumnListing($table), $table, $table.'_');
+        $related_columns = $this->applyQualifiedColumnName($this->joinTableColumns[$relation->getRelationName()] ?? $this->getColumnListing($table), $table, $table.'_');
 
         $columns = array_merge($columns, $related_columns);
 
@@ -170,14 +190,14 @@ class Builder extends EloquentBuilder
                 : $relation->getQualifiedParentKeyName();
 
             $join->on(
-                $relation->getQualifiedForeignKeyName(), 
-                '=', 
+                $relation->getQualifiedForeignKeyName(),
+                '=',
                 $compareKey
             );
             // Apply realtion constraints on the join clause
             $constraints($join);
         });
-        
+
     }
 
     /**
@@ -188,8 +208,8 @@ class Builder extends EloquentBuilder
     {
         $attributes = (array) $item;
         $this->populatedJoins = [];
-        
-        foreach ($this->joinWith as $name => $constraints) {   
+
+        foreach ($this->joinWith as $name => $constraints) {
             // Nested relation
             if (strpos($name, '.') !== false) {
                 $parent = $this->getModel();
@@ -218,7 +238,7 @@ class Builder extends EloquentBuilder
         if (isset($this->populatedJoins[$populatedKey])) {
             return $this->populatedJoins[$populatedKey];
         }
-        
+
         $related_attributes = [];
         foreach ($attributes as $key => $value) {
             if (str_starts_with($key, $related->getTable() . '_')) {
@@ -226,7 +246,7 @@ class Builder extends EloquentBuilder
                 unset($attributes[$key]); // Remove relation attributes from the query results
             }
         }
-        
+
         // No relation results, init the relation with default attributes if defined
         if ($related_attributes[$related->getKeyName()] === null) {
             $relation->initRelation([$model], $name);
